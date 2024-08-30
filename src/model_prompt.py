@@ -29,11 +29,10 @@ class KGPrompt(nn.Module):
         self.kg_encoder = RGCNConv(entity_hidden_size, entity_hidden_size, num_relations=num_relations,
                                    num_bases=num_bases)
 
-        # ------------------------------------------------------
         self.concept_edge_sets = self.concept_edge_list4GCN()
         self.concept_embeddings = self._create_entity_embeddings(29308 + 1, entity_hidden_size, 0)
         self.concept_GCN = GCNConv(entity_hidden_size, entity_hidden_size)
-        # ------------------------------------------------------
+
 
         self.node_embeds = nn.Parameter(torch.empty(n_entity, entity_hidden_size))
         stdv = math.sqrt(6.0 / (self.node_embeds.size(-2) + self.node_embeds.size(-1)))
@@ -54,14 +53,13 @@ class KGPrompt(nn.Module):
         )
         self.token_proj2 = nn.Linear(token_hidden_size, hidden_size)
 
-        # --------------------------------------------------
         self.word_proj1 = nn.Sequential(
             nn.Linear(entity_hidden_size, entity_hidden_size // 2),
             nn.ReLU(),
             nn.Linear(entity_hidden_size // 2, entity_hidden_size),
         )
         self.word_proj2 = nn.Linear(entity_hidden_size, hidden_size)
-        # --------------------------------------------------
+     
 
         self.cross_attn1 = nn.Linear(hidden_size, hidden_size, bias=False)
         self.cross_attn2 = nn.Linear(hidden_size, hidden_size, bias=False)
@@ -72,13 +70,11 @@ class KGPrompt(nn.Module):
         )
         self.prompt_proj2 = nn.Linear(hidden_size, n_layer * n_block * hidden_size)
 
-        # -------------------------------------------------
-        # 图片相关
+
         self.image_proj = nn.Linear(1024, hidden_size)
         self.mha = MultiheadAttention(embed_dim=hidden_size,
                                       num_heads=8,
                                       attn_dropout=0.1)
-        # -------------------------------------------------
 
         if self.n_prefix_rec is not None:
             self.rec_prefix_embeds = nn.Parameter(torch.empty(n_prefix_rec, hidden_size))
@@ -101,7 +97,6 @@ class KGPrompt(nn.Module):
         self.node_embeds.data = node_embeds
         self.node_embeds.requires_grad_(False)
 
-    # ---------------------------------------------
     def concept_edge_list4GCN(self):
         node2index = json.load(open('./data/conceptnet/key2index_3rd.json', encoding='utf-8'))
         f = open('./data/conceptnet/conceptnet_edges2nd.txt', encoding='utf-8')
@@ -132,7 +127,7 @@ class KGPrompt(nn.Module):
         word_embeds = self.word_proj1(word_embeds) + word_embeds
         word_embeds = self.word_proj2(word_embeds)
         return word_embeds
-    # ---------------------------------------------
+ -
 
     def get_entity_embeds(self):
         node_embeds = self.node_embeds
@@ -150,23 +145,21 @@ class KGPrompt(nn.Module):
             entity_embeds = self.get_entity_embeds()
             entity_embeds = entity_embeds[entity_ids]  # (batch_size, entity_len, hidden_size)
 
-        # -----------------------------------------
         if word_ids is not None:
             batch_size, word_len = word_ids.shape[:2]
             word_embeds = self.get_word_embeds()
             word_embeds = word_embeds[word_ids]  # (batch_size, entity_len, hidden_size)
-        # -----------------------------------------
+
 
         if token_embeds is not None:
             batch_size, token_len = token_embeds.shape[:2]
             token_embeds = self.token_proj1(token_embeds) + token_embeds  # (batch_size, token_len, hidden_size)
             token_embeds = self.token_proj2(token_embeds)
 
-        # --------------------
         if word_embeds is not None:
             attn_weights2 = self.cross_attn2(token_embeds) @ word_embeds.permute(0, 2, 1)
             attn_weights2 /= self.hidden_size
-        # --------------------
+      
 
         if entity_embeds is not None and token_embeds is not None:
             attn_weights1 = self.cross_attn1(token_embeds) @ entity_embeds.permute(0, 2, 1)  # (batch_size, token_len, entity_len)
@@ -188,42 +181,42 @@ class KGPrompt(nn.Module):
                 # prompt_len = token_len
 
         elif entity_embeds is not None:
-            # 如果只存在实体嵌入，则prompt_embeds只能是实体嵌入
+     
             prompt_embeds = entity_embeds
             prompt_len = entity_len
 
         else:
-            # 如果只存在词嵌入，则prompt_embeds只能是词嵌入
+    
             prompt_embeds = token_embeds
             prompt_len = token_len
 
         if self.n_prefix_rec is not None and use_rec_prefix:
 
-            if image_embeds is not None:  # 64*1024
-                # 将图像嵌入映射为实体嵌入的维度 768
+            if image_embeds is not None:  
+               
                 image_embeds = self.image_proj(image_embeds)  # 64*768
-                # 将图像嵌入堆叠为实体嵌入的维度（本次实体有9个，其维度为 64,9,768，而图像始终是64,768
-                image_embeds = image_embeds.unsqueeze(1)  # 图像维度变为 64,1,768  64*1*768
-                image_embeds = image_embeds.repeat(1, prompt_embeds.shape[1], 1)  # 64*12*768  # 图像维度变为 64,1,768
+              
+                image_embeds = image_embeds.unsqueeze(1)
+                image_embeds = image_embeds.repeat(1, prompt_embeds.shape[1], 1)  
                 prompt_embeds, _ = self.mha(query=prompt_embeds, key=image_embeds, value=image_embeds)
 
-            # 使用推荐映射：初始推荐映射参数放入推荐映射层+初始推荐映射参数
+         
             prefix_embeds = self.rec_prefix_proj(self.rec_prefix_embeds) + self.rec_prefix_embeds
             prefix_embeds = prefix_embeds.expand(prompt_embeds.shape[0], -1, -1)
-            # 融合后的实体嵌入=映射后推荐嵌入 拼接 融合后的实体嵌入
+  
             prompt_embeds = torch.cat([prefix_embeds, prompt_embeds], dim=1)
             prompt_len += self.n_prefix_rec
         if self.n_prefix_conv is not None and use_conv_prefix:
-            # 使用对话映射：初始对话映射参数放入对话映射层+初始对话映射参数
+    
             prefix_embeds = self.conv_prefix_proj(self.conv_prefix_embeds) + self.conv_prefix_embeds
             prefix_embeds = prefix_embeds.expand(prompt_embeds.shape[0], -1, -1)
-            # 融合后的词嵌入=映射后对话嵌入 拼接 融合后的词嵌入
+      
             prompt_embeds = torch.cat([prefix_embeds, prompt_embeds], dim=1)
             prompt_len += self.n_prefix_conv
 
-        # 融合后的词/实体嵌入=融合后的词/实体嵌入->融合嵌入映射层1 + 融合后的词/实体嵌入
+
         prompt_embeds = self.prompt_proj1(prompt_embeds) + prompt_embeds
-        # 融合后的词/实体嵌入=融合后的词/实体嵌入->融合嵌入映射层2
+
         prompt_embeds = self.prompt_proj2(prompt_embeds)
         prompt_embeds = prompt_embeds.reshape(
             batch_size, prompt_len, self.n_layer, self.n_block, self.n_head, self.head_dim
