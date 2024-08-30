@@ -170,9 +170,9 @@ if __name__ == '__main__':
     text_encoder.resize_token_embeddings(len(text_tokenizer))
     text_encoder = text_encoder.to(device)
 
-    # ***********************************************************************
+
     diffusion, denoise = denoise_out(args, device)
-    # ***********************************************************************
+  
 
     prompt_encoder = KGPrompt(
         model.config.n_embd, text_encoder.config.hidden_size, model.config.n_head, model.config.n_layer, 2,
@@ -189,7 +189,7 @@ if __name__ == '__main__':
     for module in fix_modules:
         module.requires_grad_(False)
 
-    # 让DialoGPT里的MHA和Linear进行优化
+
     for name, p in model.named_parameters():
         if name.startswith('mha') or name.startswith('image_proj'):
             p.requires_grad = True
@@ -281,11 +281,11 @@ if __name__ == '__main__':
     # Only show the progress bar once on each machine.
     progress_bar = tqdm(range(args.max_train_steps), disable=not accelerator.is_local_main_process)
 
-    # 读取相关实体
+
     kg_dir = os.path.join('data', args.kg)
     lmkg_moventityId2entitiesId = pkl.load(open(os.path.join(kg_dir, 'lmkg_moventityId2entitiesId.pkl'), 'rb'))
     lmkg_moventityId2imgemb = pkl.load(open(os.path.join(kg_dir, 'movientityId2imagemb.pkl'), 'rb'))
-    # lmkg_moventityId2imgemb = pkl.load(open(os.path.join(kg_dir, 'lmkg_moventityId2imgemb.pkl'), 'rb'))
+ 
 
     # save model with best metric
     metric, mode = 'loss', -1
@@ -306,7 +306,7 @@ if __name__ == '__main__':
                 token_embeds = text_encoder(**batch['prompt']).last_hidden_state
                 if args.use_image_embeds:
                     prompt_embeds = prompt_encoder(
-                        entity_ids=batch['entity'],  # 64*12 里面都是entity_id
+                        entity_ids=batch['entity'], 
                         token_embeds=token_embeds,
                         output_entity=True,
                         use_rec_prefix=True
@@ -314,7 +314,7 @@ if __name__ == '__main__':
                     batch['context']['prompt_embeds'] = prompt_embeds
                     batch['context']['entity_embeds'] = prompt_encoder.get_entity_embeds()
 
-                    # 原始的推荐概率--这个是正常跑的
+               
                     logits = model(**batch['context'], rec=True).rec_logits[:, kg['item_ids']]
                     # outputs = model(**batch['context'], rec=True)
                     # logits = outputs.rec_logits
@@ -325,13 +325,6 @@ if __name__ == '__main__':
                     # ranks = torch.topk(logits, k=50, dim=-1).indices.tolist()
                     ranks = [[rank for rank in batch_rank] for batch_rank in ranks]
 
-                    # 修改后的--这个还没试
-                    # outputs = model(**batch['context'], rec=True)
-                    # logits = outputs.rec_logits  # [:, selected_rows.long()]  64*6423
-                    # ranks = torch.topk(logits, k=50, dim=-1).indices.tolist()
-                    # ranks = [[rank for rank in batch_rank] for batch_rank in ranks]
-
-                    # 取出初次推荐电影的海报嵌入，若没有则为空
                     batch_imgemb = []
                     max_len = len(list(lmkg_moventityId2imgemb.values())[0])
                     for i, batch_one in enumerate(ranks):
@@ -341,8 +334,7 @@ if __name__ == '__main__':
                         else:
                             batch_imgemb.append(np.ones(max_len))
 
-                    batch_imgemb = torch.tensor(np.array(batch_imgemb), dtype=torch.float32).cuda()  # 里面有64个子列表的ndarray格式，里面的每个维度是1024
-                    # _, batch_imgemb = CCIM(args=args, prompt_embeds=prompt_embeds, batch_imagembs=batch_imgemb)
+                    batch_imgemb = torch.tensor(np.array(batch_imgemb), dtype=torch.float32).cuda() 
 
             prompt_embeds = prompt_encoder(
                 entity_ids=batch['entity'],
@@ -355,47 +347,24 @@ if __name__ == '__main__':
             batch['context']['prompt_embeds'] = prompt_embeds
             batch['context']['entity_embeds'] = prompt_encoder.get_entity_embeds()
 
-            # # 修改内容
+
             items_ids = kg['item_ids']
             items_ids_tensor = torch.tensor(items_ids, dtype=torch.long, device='cuda')
             selected_rows = batch['context']['entity_embeds'][items_ids_tensor]
             batch['context']['movie_entity_embeds'] = torch.FloatTensor(selected_rows.cpu())
 
-            # # 这里没修改的，正常跑的  扩散之前用的这个
-            # outputs = model(**batch['context'], rec=True)
-            # logits = outputs.rec_logits  # 64*6423
-            # ranks = torch.topk(logits, k=50, dim=-1).indices.tolist()
-            # # 这里跟zcy的不一样
-            # # ranks = [[kg['item_ids'][rank] for rank in batch_rank] for batch_rank in ranks]
-            # ranks = [[rank for rank in batch_rank] for batch_rank in ranks]
-            # loss = outputs.rec_loss / args.gradient_accumulation_steps
-            # accelerator.backward(loss)
-            # train_loss.append(float(loss))
-
-            # 修改为扩散的内容
+      
             outputs = model(**batch['context'], rec=True)
             logits = outputs.rec_logits  # 64*6423
-
-            # diffusion_loss
-            # *************************************************
             train_dl = diffusion.training_losses(denoise, logits, args.reweight)
             train_dl_loss = train_dl["loss"].mean()
             prediction = diffusion.p_sample(denoise, logits, args.sampling_steps, args.sampling_noise)
             ranks = torch.topk(prediction, k=50, dim=-1).indices.tolist()
-            # *************************************************
-
-            # ranks = torch.topk(logits, k=50, dim=-1).indices.tolist()
-            # 这里跟zcy的不一样
-            # ranks = [[kg['item_ids'][rank] for rank in batch_rank] for batch_rank in ranks]
             ranks = [[rank for rank in batch_rank] for batch_rank in ranks]
             loss = outputs.rec_loss / args.gradient_accumulation_steps
             accelerator.backward(loss)
             train_loss.append(float(loss))
 
-            # # 原始内容
-            # loss = model(**batch['context'], rec=True).rec_loss / args.gradient_accumulation_steps
-            # accelerator.backward(loss)
-            # train_loss.append(float(loss))
 
             # optim step
             if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
@@ -428,7 +397,7 @@ if __name__ == '__main__':
                 token_embeds = text_encoder(**batch['prompt']).last_hidden_state
                 if args.use_image_embeds:
                     prompt_embeds = prompt_encoder(
-                        entity_ids=batch['entity'],  # 64*12 里面都是entity_id
+                        entity_ids=batch['entity'], 
                         token_embeds=token_embeds,
                         output_entity=True,
                         use_rec_prefix=True
@@ -436,7 +405,7 @@ if __name__ == '__main__':
                     batch['context']['prompt_embeds'] = prompt_embeds
                     batch['context']['entity_embeds'] = prompt_encoder.get_entity_embeds()
 
-                    # 这里是用的下面的两个，不正常的话，用上面那一句
+                 
                     logits = model(**batch['context'], rec=True).rec_logits[:, kg['item_ids']]
                     # logits = model(**batch['context'], rec=True).rec_logits
 
@@ -446,7 +415,6 @@ if __name__ == '__main__':
                     # ranks = torch.topk(logits, k=50, dim=-1).indices.tolist()
                     ranks = [[rank for rank in batch_rank] for batch_rank in ranks]
 
-                    # 取出初次推荐电影的海报嵌入，若没有则为空
                     batch_imgemb = []
                     max_len = len(list(lmkg_moventityId2imgemb.values())[0])
                     for i, batch_one in enumerate(ranks):
@@ -468,34 +436,19 @@ if __name__ == '__main__':
                 batch['context']['prompt_embeds'] = prompt_embeds
                 batch['context']['entity_embeds'] = prompt_encoder.get_entity_embeds()
 
-                # 修改内容
+        
                 outputs = model(**batch['context'], rec=True)
                 valid_loss.append(float(outputs.rec_loss))
 
                 logits = outputs.rec_logits[:, kg['item_ids']]
 
-                # diffusion_loss
-                # *************************************************
                 valid_dl = diffusion.training_losses(denoise, logits, args.reweight)
                 valid_dl_loss = valid_dl["loss"].mean()
                 prediction = diffusion.p_sample(denoise, logits, args.sampling_steps, args.sampling_noise)
                 ranks = torch.topk(prediction, k=50, dim=-1).indices.tolist()
-                # *************************************************
-
-                # ranks = torch.topk(logits, k=50, dim=-1).indices.tolist()
                 ranks = [[rank for rank in batch_rank] for batch_rank in ranks]
                 labels = batch['context']['movie_rec_labels']
-                # labels = batch['context']['rec_labels']
                 evaluator.evaluate(ranks, labels)
-
-                # 原始内容
-                # outputs = model(**batch['context'], rec=True)
-                # valid_loss.append(float(outputs.rec_loss))
-                # logits = outputs.rec_logits[:, kg['item_ids']]
-                # ranks = torch.topk(logits, k=50, dim=-1).indices.tolist()
-                # ranks = [[kg['item_ids'][rank] for rank in batch_rank] for batch_rank in ranks]
-                # labels = batch['context']['rec_labels']
-                # evaluator.evaluate(ranks, labels)
 
         # metric
         report = accelerator.gather(evaluator.report())
@@ -528,7 +481,7 @@ if __name__ == '__main__':
                 if args.use_image_embeds:
 
                     prompt_embeds = prompt_encoder(
-                        entity_ids=batch['entity'],  # 64*12 里面都是entity_id
+                        entity_ids=batch['entity'], 
                         token_embeds=token_embeds,
                         output_entity=True,
                         use_rec_prefix=True
@@ -567,34 +520,19 @@ if __name__ == '__main__':
                 batch['context']['prompt_embeds'] = prompt_embeds
                 batch['context']['entity_embeds'] = prompt_encoder.get_entity_embeds()
 
-                # # 修改内容
                 outputs = model(**batch['context'], rec=True)
                 test_loss.append(float(outputs.rec_loss))
                 logits = outputs.rec_logits[:, kg['item_ids']]
 
-                # diffusion_loss
-                # *************************************************
                 test_dl = diffusion.training_losses(denoise, logits, args.reweight)
                 test_dl_loss = test_dl["loss"].mean()
                 prediction = diffusion.p_sample(denoise, logits, args.sampling_steps, args.sampling_noise)
                 ranks = torch.topk(prediction, k=50, dim=-1).indices.tolist()
-                # *************************************************
-
-                # logits = outputs.rec_logits
-                # ranks = torch.topk(logits, k=50, dim=-1).indices.tolist()
                 ranks = [[rank for rank in batch_rank] for batch_rank in ranks]
                 labels = batch['context']['movie_rec_labels']
 
                 evaluator.evaluate(ranks, labels)
 
-                # 原始内容
-                # outputs = model(**batch['context'], rec=True)
-                # test_loss.append(float(outputs.rec_loss))
-                # logits = outputs.rec_logits[:, kg['item_ids']]
-                # ranks = torch.topk(logits, k=50, dim=-1).indices.tolist()
-                # ranks = [[kg['item_ids'][rank] for rank in batch_rank] for batch_rank in ranks]
-                # labels = batch['context']['rec_labels']
-                # evaluator.evaluate(ranks, labels)
         # metric
         report = accelerator.gather(evaluator.report())
         for k, v in report.items():
